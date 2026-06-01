@@ -1,0 +1,133 @@
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <message_filters/subscriber.h>
+#include <message_filters/sync_policies/approximate_time.h>
+#include <message_filters/synchronizer.h>
+#include <pcl_conversions/pcl_conversions.h>
+
+#include "lidar_odometry/point_types.hpp"
+#include "lidar_odometry/sdk_pose_buffer.hpp"
+#include "lidar_odometry/deskew.hpp"
+#include "lidar_odometry/icp_odometry.hpp"
+
+using PointCloud2 = sensor_msgs::msg::PointCloud2;
+using Odometry    = nav_msgs::msg::Odometry;
+using ApproxSync  = message_filters::sync_policies::ApproximateTime<PointCloud2, Odometry>;
+
+class LidarOdometryNode : public rclcpp::Node
+{
+public:
+  LidarOdometryNode()
+  : Node("lidar_odometry_node"),
+    icp_odom_(IcpConfig{})
+  {
+    // 245Hz SDK 버퍼 구독
+    sdk_buffer_sub_ = create_subscription<Odometry>(
+      "/state_SDK", rclcpp::QoS(500),
+      [this](const Odometry::ConstSharedPtr & msg) {
+        sdk_buffer_.insert(
+          rclcpp::Time(msg->header.stamp),
+          SdkPoseBuffer::odomToMatrix(msg));
+      });
+
+    // ICP initial guess용 동기화 구독
+    points_sub_.subscribe(this, "/points_raw");
+    state_sub_.subscribe(this, "/state_SDK");
+    sync_ = std::make_shared<message_filters::Synchronizer<ApproxSync>>(
+      ApproxSync(10), points_sub_, state_sub_);
+    sync_->registerCallback(
+      std::bind(&LidarOdometryNode::syncCallback, this,
+        std::placeholders::_1, std::placeholders::_2));
+
+    odom_pub_ = create_publisher<Odometry>("/lidar_odom", 10);
+
+    RCLCPP_INFO(get_logger(), "LidarOdometryNode started");
+  }
+
+private:
+  void syncCallback(
+    const PointCloud2::ConstSharedPtr & cloud_msg,
+    const Odometry::ConstSharedPtr & odom_msg)
+  {
+    const double dt_sec =
+      std::abs(rclcpp::Time(cloud_msg->header.stamp).seconds() -
+               rclcpp::Time(odom_msg->header.stamp).seconds());
+
+    // Gate 1: sync dt가 100ms 초과 → 잘못 매칭된 pair, 스킵
+    if (dt_sec > 0.1) {
+      RCLCPP_WARN(get_logger(), "[sync] dt=%.1f ms too large, skipping frame", dt_sec * 1000.0);
+      return;
+    }
+    RCLCPP_INFO(get_logger(), "[sync] dt=%.1f ms", dt_sec * 1000.0);
+
+    // SDK 현재 포즈 갱신
+    const Eigen::Matrix4f sdk_current = SdkPoseBuffer::odomToMatrix(odom_msg);
+    const Eigen::Matrix4f sdk_delta   = sdk_prev_pose_.inverse() * sdk_current;
+
+    // 1. PointCloud2 → CloudIRT
+    CloudIRT::Ptr raw_cloud(new CloudIRT);
+    pcl::fromROSMsg(*cloud_msg, *raw_cloud);
+
+    // 2. Deskewing
+    size_t corrected = 0;
+    CloudXYZ::Ptr deskewed = deskewCloud(
+      raw_cloud, rclcpp::Time(cloud_msg->header.stamp), sdk_buffer_, get_logger(), corrected);
+
+    // Gate 2: deskewing이 전혀 안 된 경우 → SDK 버퍼 범위 밖, 스킵
+    if (corrected == 0 && !raw_cloud->empty()) {
+      RCLCPP_WARN(get_logger(), "[deskew] no points corrected, skipping frame");
+      sdk_prev_pose_ = sdk_current;
+      return;
+    }
+
+    // 3. ICP 업데이트 (VoxelGrid 포함)
+    const bool converged = icp_odom_.update(deskewed, sdk_delta, get_logger());
+
+    // 4. 수렴 시 /lidar_odom 퍼블리시
+    if (converged) {
+      const Eigen::Matrix4f & pose = icp_odom_.currentPose();
+      Eigen::Quaternionf q_acc(Eigen::Matrix3f(pose.block<3, 3>(0, 0)));
+      q_acc.normalize();
+
+      Odometry out;
+      out.header.stamp    = cloud_msg->header.stamp;
+      out.header.frame_id = "sdk_odom";
+      out.child_frame_id  = "base_link";
+      out.pose.pose.position.x    = static_cast<double>(pose(0, 3));
+      out.pose.pose.position.y    = static_cast<double>(pose(1, 3));
+      out.pose.pose.position.z    = static_cast<double>(pose(2, 3));
+      out.pose.pose.orientation.x = static_cast<double>(q_acc.x());
+      out.pose.pose.orientation.y = static_cast<double>(q_acc.y());
+      out.pose.pose.orientation.z = static_cast<double>(q_acc.z());
+      out.pose.pose.orientation.w = static_cast<double>(q_acc.w());
+      odom_pub_->publish(out);
+
+      RCLCPP_INFO(get_logger(), "[pose] x=%.3f  y=%.3f  z=%.3f",
+        pose(0, 3), pose(1, 3), pose(2, 3));
+    }
+
+    sdk_prev_pose_ = sdk_current;
+  }
+
+  // ROS2 인터페이스
+  message_filters::Subscriber<PointCloud2>   points_sub_;
+  message_filters::Subscriber<Odometry>      state_sub_;
+  std::shared_ptr<message_filters::Synchronizer<ApproxSync>> sync_;
+  rclcpp::Subscription<Odometry>::SharedPtr  sdk_buffer_sub_;
+  rclcpp::Publisher<Odometry>::SharedPtr     odom_pub_;
+
+  // 모듈
+  SdkPoseBuffer sdk_buffer_;
+  IcpOdometry   icp_odom_;
+
+  Eigen::Matrix4f sdk_prev_pose_ = Eigen::Matrix4f::Identity();
+};
+
+int main(int argc, char * argv[])
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<LidarOdometryNode>());
+  rclcpp::shutdown();
+  return 0;
+}
