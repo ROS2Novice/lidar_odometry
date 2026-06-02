@@ -1,12 +1,21 @@
 #pragma once
 #include "lidar_odometry/point_types.hpp"
 #include "lidar_odometry/sdk_pose_buffer.hpp"
+#include "lidar_odometry/imu_buffer.hpp"
 #include <rclcpp/rclcpp.hpp>
 
-// 포인트클라우드의 모션 왜곡을 스캔 시작 시점 기준으로 보정
+// SDK 포즈 기반 deskewing (rotation + translation)
 CloudXYZ::Ptr deskewCloud(
   const CloudIRT::Ptr & cloud,
   const rclcpp::Time & scan_start,
   const SdkPoseBuffer & buffer,
+  rclcpp::Logger logger,
+  size_t & corrected_out);
+
+// IMU orientation 기반 deskewing (rotation 전용, 더 정밀)
+CloudXYZ::Ptr deskewCloudImu(
+  const CloudIRT::Ptr & cloud,
+  const rclcpp::Time & scan_start,
+  const ImuBuffer & imu_buffer,
   rclcpp::Logger logger,
   size_t & corrected_out);

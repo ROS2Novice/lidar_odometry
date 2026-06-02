@@ -14,12 +14,17 @@ find_package(pcl_conversions REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(fast_gicp REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 add_executable(lidar_odometry_node
   src/lidar_odometry_node.cpp
   src/sdk_pose_buffer.cpp
+  src/imu_buffer.cpp
   src/deskew.cpp
   src/icp_odometry.cpp
+  src/ground_removal.cpp
 )
 
 target_include_directories(lidar_odometry_node PUBLIC
@@ -35,6 +40,9 @@ ament_target_dependencies(lidar_odometry_node
   pcl_conversions
   message_filters
   Eigen3
+  fast_gicp
+  tf2_ros
+  geometry_msgs
 )
 target_link_libraries(lidar_odometry_node Eigen3::Eigen)
 
