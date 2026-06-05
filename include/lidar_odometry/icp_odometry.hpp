@@ -32,6 +32,8 @@ public:
   double lastFitnessScore() const { return last_score_; }
 
 private:
+  void trimMap(const Eigen::Vector3f & pos);
+
   IcpConfig       cfg_;
   CloudXYZ::Ptr   local_map_;
   Eigen::Matrix4f current_pose_ = Eigen::Matrix4f::Identity();

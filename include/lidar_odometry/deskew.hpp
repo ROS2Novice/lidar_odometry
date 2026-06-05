@@ -12,10 +12,11 @@ CloudXYZ::Ptr deskewCloud(
   rclcpp::Logger logger,
   size_t & corrected_out);
 
-// IMU orientation 기반 deskewing (rotation 전용, 더 정밀)
+// IMU rotation + SDK translation 하이브리드 deskewing
 CloudXYZ::Ptr deskewCloudImu(
   const CloudIRT::Ptr & cloud,
   const rclcpp::Time & scan_start,
   const ImuBuffer & imu_buffer,
+  const SdkPoseBuffer & sdk_buffer,
   rclcpp::Logger logger,
   size_t & corrected_out);

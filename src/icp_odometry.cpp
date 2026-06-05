@@ -1,9 +1,44 @@
 #include "lidar_odometry/icp_odometry.hpp"
 #include <fast_gicp/gicp/fast_vgicp.hpp>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/random_sample.h>
 #include <pcl/common/transforms.h>
 
 IcpOdometry::IcpOdometry(IcpConfig cfg) : cfg_(cfg) {}
+
+// Radius crop → VoxelGrid → RandomSample 하드캡 순서로 맵 크기 보장
+void IcpOdometry::trimMap(const Eigen::Vector3f & pos)
+{
+  const float r2 = cfg_.local_map_radius * cfg_.local_map_radius;
+  CloudXYZ::Ptr in_range(new CloudXYZ);
+  in_range->reserve(local_map_->size());
+  for (const auto & pt : *local_map_) {
+    const float d2 = (pt.x - pos.x()) * (pt.x - pos.x()) +
+                     (pt.y - pos.y()) * (pt.y - pos.y()) +
+                     (pt.z - pos.z()) * (pt.z - pos.z());
+    if (d2 <= r2) in_range->push_back(pt);
+  }
+  local_map_ = in_range;
+
+  if (static_cast<int>(local_map_->size()) > cfg_.local_map_max_points) {
+    pcl::VoxelGrid<pcl::PointXYZ> vg;
+    vg.setInputCloud(local_map_);
+    vg.setLeafSize(cfg_.local_map_leaf_size, cfg_.local_map_leaf_size, cfg_.local_map_leaf_size);
+    CloudXYZ::Ptr filtered(new CloudXYZ);
+    vg.filter(*filtered);
+    local_map_ = filtered;
+  }
+
+  // sparse 환경에서 VoxelGrid 후에도 초과 시 RandomSample로 하드캡
+  if (static_cast<int>(local_map_->size()) > cfg_.local_map_max_points) {
+    pcl::RandomSample<pcl::PointXYZ> rs;
+    rs.setInputCloud(local_map_);
+    rs.setSample(static_cast<unsigned int>(cfg_.local_map_max_points));
+    CloudXYZ::Ptr sampled(new CloudXYZ);
+    rs.filter(*sampled);
+    local_map_ = sampled;
+  }
+}
 
 bool IcpOdometry::update(
   const CloudXYZ::Ptr & cloud,
@@ -11,7 +46,6 @@ bool IcpOdometry::update(
   rclcpp::Logger logger)
 {
   if (!local_map_) {
-    // 첫 스캔: initial_guess로 odom 프레임에 변환해서 local map 초기화
     local_map_.reset(new CloudXYZ);
     pcl::transformPointCloud(*cloud, *local_map_, initial_guess);
     current_pose_ = initial_guess;
@@ -26,17 +60,21 @@ bool IcpOdometry::update(
   vgicp.setMaxCorrespondenceDistance(cfg_.max_correspondence_distance);
   vgicp.setTransformationEpsilon(cfg_.transformation_epsilon);
 
-  // target: odom 프레임의 local map  /  source: 센서 프레임의 현재 스캔
   vgicp.setInputTarget(local_map_);
   vgicp.setInputSource(cloud);
 
   CloudXYZ aligned;
-  vgicp.align(aligned, initial_guess);   // initial_guess = 예측 절대 포즈
+  vgicp.align(aligned, initial_guess);
 
   if (!vgicp.hasConverged()) {
-    // SDK initial guess로 포즈 유지 → 다음 프레임 initial guess가 틀어지지 않음
     current_pose_ = initial_guess;
     RCLCPP_WARN(logger, "[VGICP] did not converge, falling back to SDK pose");
+
+    // SDK 예측 포즈로 스캔을 맵에 추가 → 맵이 stale해지면 연쇄 실패 방지
+    CloudXYZ::Ptr predicted_in_map(new CloudXYZ);
+    pcl::transformPointCloud(*cloud, *predicted_in_map, initial_guess);
+    *local_map_ += *predicted_in_map;
+    trimMap(current_pose_.block<3, 1>(0, 3));
     return false;
   }
 
@@ -47,39 +85,9 @@ bool IcpOdometry::update(
     return false;
   }
 
-  // getFinalTransformation() = 센서→odom 절대 변환
   current_pose_ = vgicp.getFinalTransformation();
-
-  // aligned 스캔(odom 프레임)을 local map에 추가
   *local_map_ += aligned;
-
-  // 현재 위치 기준 반경 crop — 멀리 떨어진 포인트 제거
-  {
-    const Eigen::Vector3f pos = current_pose_.block<3, 1>(0, 3);
-    const float r2 = cfg_.local_map_radius * cfg_.local_map_radius;
-    CloudXYZ::Ptr in_range(new CloudXYZ);
-    in_range->reserve(local_map_->size());
-    for (const auto & pt : *local_map_) {
-      const float d2 = (pt.x - pos.x()) * (pt.x - pos.x()) +
-                       (pt.y - pos.y()) * (pt.y - pos.y()) +
-                       (pt.z - pos.z()) * (pt.z - pos.z());
-      if (d2 <= r2) in_range->push_back(pt);
-    }
-    local_map_ = in_range;
-  }
-
-  // 반경 crop 후에도 포인트 수 초과 시 추가 다운샘플링
-  if (static_cast<int>(local_map_->size()) > cfg_.local_map_max_points) {
-    pcl::VoxelGrid<pcl::PointXYZ> vg;
-    vg.setInputCloud(local_map_);
-    vg.setLeafSize(
-      cfg_.local_map_leaf_size,
-      cfg_.local_map_leaf_size,
-      cfg_.local_map_leaf_size);
-    CloudXYZ::Ptr filtered(new CloudXYZ);
-    vg.filter(*filtered);
-    local_map_ = filtered;
-  }
+  trimMap(current_pose_.block<3, 1>(0, 3));
 
   RCLCPP_INFO(logger, "[VGICP] score=%.6f  map=%zu pts", last_score_, local_map_->size());
   return true;

@@ -11,7 +11,6 @@ find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
-find_package(message_filters REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(fast_gicp REQUIRED)
@@ -38,7 +37,6 @@ ament_target_dependencies(lidar_odometry_node
   nav_msgs
   pcl_ros
   pcl_conversions
-  message_filters
   Eigen3
   fast_gicp
   tf2_ros
@@ -47,6 +45,11 @@ ament_target_dependencies(lidar_odometry_node
 target_link_libraries(lidar_odometry_node Eigen3::Eigen)
 
 install(TARGETS lidar_odometry_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/gt_publisher.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

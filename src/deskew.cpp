@@ -50,13 +50,18 @@ CloudXYZ::Ptr deskewCloudImu(
   const CloudIRT::Ptr & cloud,
   const rclcpp::Time & scan_start,
   const ImuBuffer & imu_buffer,
+  const SdkPoseBuffer & sdk_buffer,
   rclcpp::Logger logger,
   size_t & corrected_out)
 {
-  const auto buf = imu_buffer.snapshot();
+  const auto imu_buf = imu_buffer.snapshot();
+  const auto sdk_buf = sdk_buffer.snapshot();
 
   Eigen::Quaternionf q_start;
-  const bool has_start = interpolateImuOrientation(buf, scan_start, q_start);
+  const bool has_imu_start = interpolateImuOrientation(imu_buf, scan_start, q_start);
+
+  Eigen::Matrix4f T_start;
+  const bool has_sdk_start = interpolatePose(sdk_buf, scan_start, T_start);
 
   CloudXYZ::Ptr out(new CloudXYZ);
   out->reserve(cloud->size());
@@ -66,14 +71,21 @@ CloudXYZ::Ptr deskewCloudImu(
     if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z)) continue;
 
     pcl::PointXYZ xyz;
-    if (has_start) {
+    if (has_imu_start && has_sdk_start) {
       const rclcpp::Time t_pt =
         scan_start + rclcpp::Duration::from_seconds(static_cast<double>(pt.time));
       Eigen::Quaternionf q_pt;
-      if (interpolateImuOrientation(buf, t_pt, q_pt)) {
-        // 스캔 시작 기준 상대 회전으로 포인트 보정
+      Eigen::Matrix4f T_pt;
+      if (interpolateImuOrientation(imu_buf, t_pt, q_pt) &&
+          interpolatePose(sdk_buf, t_pt, T_pt)) {
+        // 회전 보정: IMU 기반 (정밀)
+        const Eigen::Matrix3f R_rel = (q_start.inverse() * q_pt).toRotationMatrix();
+        // 이동 보정: SDK 기반, world frame 변위를 스캔 시작 시점 body frame으로 변환
+        const Eigen::Vector3f t_rel =
+          q_start.inverse() * (T_pt.block<3, 1>(0, 3) - T_start.block<3, 1>(0, 3));
+
         const Eigen::Vector3f p_corr =
-          q_start.inverse() * q_pt * Eigen::Vector3f(pt.x, pt.y, pt.z);
+          R_rel * Eigen::Vector3f(pt.x, pt.y, pt.z) + t_rel;
         xyz.x = p_corr.x();
         xyz.y = p_corr.y();
         xyz.z = p_corr.z();
