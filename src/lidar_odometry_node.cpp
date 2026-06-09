@@ -145,9 +145,9 @@ private:
     }
 
     // 3. Ground removal → ICP
-    const CloudXYZ::Ptr no_ground   = removeGround(deskewed, get_logger());
+    const GroundResult gr           = removeGround(deskewed, get_logger());
     const Eigen::Matrix4f predicted = icp_odom_.currentPose() * sdk_delta;
-    const bool converged            = icp_odom_.update(no_ground, predicted, get_logger());
+    const bool converged            = icp_odom_.update(gr.no_ground, predicted, get_logger());
 
     // 4. 수렴 시 오도메트리 발행
     if (converged) {
@@ -155,13 +155,31 @@ private:
       Eigen::Quaternionf q(Eigen::Matrix3f(pose.block<3, 3>(0, 0)));
       q.normalize();
 
+      // 센서 프레임 법선으로 평지 판단 (ICP 회전 행렬 의존 없음)
+      // n_s.z > 0.95 → 센서 기준 수평 바닥 → 로봇 z 변화 없음
+      float publish_z = pose(2, 3);
+      if (gr.plane_valid) {
+        Eigen::Vector3f n_s(gr.a, gr.b, gr.c);
+        n_s.normalize();
+        if (n_s.z() < 0.0f) n_s = -n_s;  // 위 방향으로 통일
+
+        if (n_s.z() > 0.95f) {  // 평지 감지 (~18° 이내)
+          if (first_ground_frame_) {
+            corrected_z_        = pose(2, 3);
+            first_ground_frame_ = false;
+          }
+          publish_z = corrected_z_;
+        }
+      }
+      prev_icp_pose_ = pose;
+
       Odometry out;
       out.header.stamp    = cloud_msg->header.stamp;
       out.header.frame_id = "sdk_odom";
       out.child_frame_id  = "base_link";
       out.pose.pose.position.x    = static_cast<double>(pose(0, 3));
       out.pose.pose.position.y    = static_cast<double>(pose(1, 3));
-      out.pose.pose.position.z    = static_cast<double>(pose(2, 3));
+      out.pose.pose.position.z    = static_cast<double>(publish_z);
       out.pose.pose.orientation.x = static_cast<double>(q.x());
       out.pose.pose.orientation.y = static_cast<double>(q.y());
       out.pose.pose.orientation.z = static_cast<double>(q.z());
@@ -182,15 +200,15 @@ private:
       tf_msg.child_frame_id  = "base_link";
       tf_msg.transform.translation.x = static_cast<double>(pose(0, 3));
       tf_msg.transform.translation.y = static_cast<double>(pose(1, 3));
-      tf_msg.transform.translation.z = static_cast<double>(pose(2, 3));
+      tf_msg.transform.translation.z = static_cast<double>(publish_z);
       tf_msg.transform.rotation.x = static_cast<double>(q.x());
       tf_msg.transform.rotation.y = static_cast<double>(q.y());
       tf_msg.transform.rotation.z = static_cast<double>(q.z());
       tf_msg.transform.rotation.w = static_cast<double>(q.w());
       tf_broadcaster_.sendTransform(tf_msg);
 
-      RCLCPP_INFO(get_logger(), "[pose] x=%.3f  y=%.3f  z=%.3f",
-        pose(0, 3), pose(1, 3), pose(2, 3));
+      RCLCPP_INFO(get_logger(), "[pose] x=%.3f  y=%.3f  z=%.3f  (icp_z=%.3f)",
+        pose(0, 3), pose(1, 3), publish_z, pose(2, 3));
     }
 
     sdk_prev_pose_ = sdk_current;
@@ -214,8 +232,11 @@ private:
   Path            sdk_path_msg_;
   Eigen::Matrix4f sdk_prev_pose_  = Eigen::Matrix4f::Identity();
   Eigen::Matrix4f sdk_origin_     = Eigen::Matrix4f::Identity();
+  Eigen::Matrix4f prev_icp_pose_  = Eigen::Matrix4f::Identity();
   bool            sdk_origin_set_ = false;
   bool            first_cloud_    = true;
+  bool            first_ground_frame_ = true;
+  float           corrected_z_    = 0.0f;
 };
 
 int main(int argc, char * argv[])

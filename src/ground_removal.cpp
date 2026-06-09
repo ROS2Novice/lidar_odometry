@@ -4,9 +4,9 @@
 #include <cmath>
 #include <vector>
 
-CloudXYZ::Ptr removeGround(const CloudXYZ::Ptr & cloud, rclcpp::Logger logger)
+GroundResult removeGround(const CloudXYZ::Ptr & cloud, rclcpp::Logger logger)
 {
-  if (cloud->size() < 50) return cloud;
+  if (cloud->size() < 50) return {cloud, 0, 0, 0, 0, false};
 
   // 하위 20% z값 포인트를 ground 후보로 사용
   std::vector<float> zvals;
@@ -22,7 +22,7 @@ CloudXYZ::Ptr removeGround(const CloudXYZ::Ptr & cloud, rclcpp::Logger logger)
     if (pt.z <= z_cutoff) candidates->push_back(pt);
   }
 
-  if (candidates->size() < 10) return cloud;
+  if (candidates->size() < 10) return {cloud, 0, 0, 0, 0, false};
 
   // RANSAC 수평면 fitting
   pcl::SACSegmentation<pcl::PointXYZ> seg;
@@ -36,14 +36,14 @@ CloudXYZ::Ptr removeGround(const CloudXYZ::Ptr & cloud, rclcpp::Logger logger)
   pcl::ModelCoefficients coeff;
   seg.segment(inliers, coeff);
 
-  if (inliers.indices.empty() || coeff.values.size() < 4) return cloud;
+  if (inliers.indices.empty() || coeff.values.size() < 4) return {cloud, 0, 0, 0, 0, false};
 
   // 평면 법선이 수직에 가까운지 확인 (cos > 0.8 → 수평면)
   const float nx = coeff.values[0], ny = coeff.values[1], nz = coeff.values[2];
   const float norm = std::sqrt(nx * nx + ny * ny + nz * nz);
   if (norm < 1e-6f || std::abs(nz) / norm < 0.8f) {
     RCLCPP_DEBUG(logger, "[ground] plane not horizontal, skipping");
-    return cloud;
+    return {cloud, 0, 0, 0, 0, false};
   }
 
   // 평면 방정식: ax + by + cz + d = 0
@@ -69,5 +69,5 @@ CloudXYZ::Ptr removeGround(const CloudXYZ::Ptr & cloud, rclcpp::Logger logger)
   RCLCPP_INFO(logger, "[ground] removed=%zu  kept=%zu  (%.1f%%)",
     removed, no_ground->size(),
     100.0f * removed / static_cast<float>(cloud->size()));
-  return no_ground;
+  return {no_ground, a, b, c, d, true};
 }
