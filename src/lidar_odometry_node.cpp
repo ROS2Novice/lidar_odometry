@@ -155,23 +155,35 @@ private:
       Eigen::Quaternionf q(Eigen::Matrix3f(pose.block<3, 3>(0, 0)));
       q.normalize();
 
-      // 센서 프레임 법선으로 평지 판단 (ICP 회전 행렬 의존 없음)
-      // n_s.z > 0.95 → 센서 기준 수평 바닥 → 로봇 z 변화 없음
+      // Ground plane 기반 z 보정
+      //   n_s.z > 0.95 (평지)      : EMA smoothed sensor_height → 안정적 z
+      //   n_s.z 0.80~0.95 (완만한 경사): raw sensor_height delta → 높이 추적
+      //   그 외                    : ICP z 그대로
       float publish_z = pose(2, 3);
       if (gr.plane_valid) {
         Eigen::Vector3f n_s(gr.a, gr.b, gr.c);
-        n_s.normalize();
-        if (n_s.z() < 0.0f) n_s = -n_s;  // 위 방향으로 통일
+        const float n_norm = n_s.norm();
+        if (n_norm > 1e-6f) {
+          n_s /= n_norm;
+          if (n_s.z() < 0.0f) n_s = -n_s;
+          const float sensor_h = std::abs(gr.d) / n_norm;  // 센서~지면 수직 거리
 
-        if (n_s.z() > 0.95f) {  // 평지 감지 (~18° 이내)
-          if (first_ground_frame_) {
-            corrected_z_        = pose(2, 3);
-            first_ground_frame_ = false;
+          if (n_s.z() > 0.95f) {                           // 평지
+            if (first_ground_frame_) {
+              init_z_          = pose(2, 3);
+              init_sensor_h_   = sensor_h;
+              smooth_sensor_h_ = sensor_h;
+              first_ground_frame_ = false;
+            } else {
+              constexpr float kAlpha = 0.05f;
+              smooth_sensor_h_ = kAlpha * sensor_h + (1.0f - kAlpha) * smooth_sensor_h_;
+            }
+            publish_z = init_z_ + (init_sensor_h_ - smooth_sensor_h_);
+          } else if (n_s.z() > 0.80f && !first_ground_frame_) {  // 완만한 경사
+            publish_z = init_z_ + (init_sensor_h_ - sensor_h);
           }
-          publish_z = corrected_z_;
         }
       }
-      prev_icp_pose_ = pose;
 
       Odometry out;
       out.header.stamp    = cloud_msg->header.stamp;
@@ -207,8 +219,9 @@ private:
       tf_msg.transform.rotation.w = static_cast<double>(q.w());
       tf_broadcaster_.sendTransform(tf_msg);
 
-      RCLCPP_INFO(get_logger(), "[pose] x=%.3f  y=%.3f  z=%.3f  (icp_z=%.3f)",
-        pose(0, 3), pose(1, 3), publish_z, pose(2, 3));
+      const float sdk_z_rel = (sdk_origin_.inverse() * sdk_current)(2, 3);
+      RCLCPP_INFO(get_logger(), "[pose] x=%.3f  y=%.3f  z=%.3f  (icp_z=%.3f  sh=%.3f  sdk_z=%.3f)",
+        pose(0, 3), pose(1, 3), publish_z, pose(2, 3), smooth_sensor_h_, sdk_z_rel);
     }
 
     sdk_prev_pose_ = sdk_current;
@@ -232,11 +245,12 @@ private:
   Path            sdk_path_msg_;
   Eigen::Matrix4f sdk_prev_pose_  = Eigen::Matrix4f::Identity();
   Eigen::Matrix4f sdk_origin_     = Eigen::Matrix4f::Identity();
-  Eigen::Matrix4f prev_icp_pose_  = Eigen::Matrix4f::Identity();
   bool            sdk_origin_set_ = false;
   bool            first_cloud_    = true;
   bool            first_ground_frame_ = true;
-  float           corrected_z_    = 0.0f;
+  float           init_z_         = 0.0f;
+  float           init_sensor_h_  = 0.0f;
+  float           smooth_sensor_h_= 0.0f;
 };
 
 int main(int argc, char * argv[])
