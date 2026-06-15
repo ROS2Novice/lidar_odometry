@@ -66,8 +66,8 @@ GroundResult removeGround(const CloudXYZ::Ptr & cloud, rclcpp::Logger logger)
     }
   }
 
-  RCLCPP_INFO(logger, "[ground] removed=%zu  kept=%zu  (%.1f%%)",
-    removed, no_ground->size(),
-    100.0f * removed / static_cast<float>(cloud->size()));
+  // RCLCPP_INFO(logger, "[ground] removed=%zu  kept=%zu  (%.1f%%)",
+  //   removed, no_ground->size(),
+  //   100.0f * removed / static_cast<float>(cloud->size()));
   return {no_ground, a, b, c, d, true};
 }

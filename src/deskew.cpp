@@ -41,8 +41,8 @@ CloudXYZ::Ptr deskewCloud(
     out->push_back(xyz);
   }
 
-  RCLCPP_INFO(logger, "[deskew] total=%zu  corrected=%zu  skipped=%zu",
-    out->size(), corrected_out, out->size() - corrected_out);
+  // RCLCPP_INFO(logger, "[deskew] total=%zu  corrected=%zu  skipped=%zu",
+  //   out->size(), corrected_out, out->size() - corrected_out);
   return out;
 }
 
@@ -99,7 +99,7 @@ CloudXYZ::Ptr deskewCloudImu(
     out->push_back(xyz);
   }
 
-  RCLCPP_INFO(logger, "[deskew_imu] total=%zu  corrected=%zu  skipped=%zu",
-    out->size(), corrected_out, out->size() - corrected_out);
+  // RCLCPP_INFO(logger, "[deskew_imu] total=%zu  corrected=%zu  skipped=%zu",
+  //   out->size(), corrected_out, out->size() - corrected_out);
   return out;
 }

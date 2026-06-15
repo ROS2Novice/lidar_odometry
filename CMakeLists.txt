@@ -24,6 +24,8 @@ add_executable(lidar_odometry_node
   src/deskew.cpp
   src/icp_odometry.cpp
   src/ground_removal.cpp
+  src/keyframe_manager.cpp
+  src/scan_context.cpp
 )
 
 target_include_directories(lidar_odometry_node PUBLIC

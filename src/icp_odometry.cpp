@@ -49,7 +49,7 @@ bool IcpOdometry::update(
     local_map_.reset(new CloudXYZ);
     pcl::transformPointCloud(*cloud, *local_map_, initial_guess);
     current_pose_ = initial_guess;
-    RCLCPP_INFO(logger, "[VGICP] local map initialized  pts=%zu", local_map_->size());
+    // RCLCPP_INFO(logger, "[VGICP] local map initialized  pts=%zu", local_map_->size());
     return false;
   }
 
@@ -89,6 +89,6 @@ bool IcpOdometry::update(
   *local_map_ += aligned;
   trimMap(current_pose_.block<3, 1>(0, 3));
 
-  RCLCPP_INFO(logger, "[VGICP] score=%.6f  map=%zu pts", last_score_, local_map_->size());
+  // RCLCPP_INFO(logger, "[VGICP] score=%.6f  map=%zu pts", last_score_, local_map_->size());
   return true;
 }

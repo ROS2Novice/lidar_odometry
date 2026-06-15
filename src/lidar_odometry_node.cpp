@@ -14,6 +14,7 @@
 #include "lidar_odometry/deskew.hpp"
 #include "lidar_odometry/ground_removal.hpp"
 #include "lidar_odometry/icp_odometry.hpp"
+#include "lidar_odometry/keyframe_manager.hpp"
 
 using PointCloud2 = sensor_msgs::msg::PointCloud2;
 using Odometry    = nav_msgs::msg::Odometry;
@@ -89,6 +90,13 @@ public:
     path_msg_.header.frame_id = "sdk_odom";
 
     RCLCPP_INFO(get_logger(), "LidarOdometryNode started");
+  }
+
+  ~LidarOdometryNode()
+  {
+    RCLCPP_INFO(get_logger(),
+      "\033[1;33m==== [SHUTDOWN] keyframes=%zu  candidates=%zu  confirmed=%zu ====\033[0m",
+      kf_manager_.size(), loop_candidate_count_, kf_manager_.loopEdges().size());
   }
 
 private:
@@ -219,9 +227,30 @@ private:
       tf_msg.transform.rotation.w = static_cast<double>(q.w());
       tf_broadcaster_.sendTransform(tf_msg);
 
-      const float sdk_z_rel = (sdk_origin_.inverse() * sdk_current)(2, 3);
-      RCLCPP_INFO(get_logger(), "[pose] x=%.3f  y=%.3f  z=%.3f  (icp_z=%.3f  sh=%.3f  sdk_z=%.3f)",
-        pose(0, 3), pose(1, 3), publish_z, pose(2, 3), smooth_sensor_h_, sdk_z_rel);
+      // const float sdk_z_rel = (sdk_origin_.inverse() * sdk_current)(2, 3);
+      // RCLCPP_INFO(get_logger(), "[pose] x=%.3f  y=%.3f  z=%.3f  (icp_z=%.3f  sh=%.3f  sdk_z=%.3f)",
+      //   pose(0, 3), pose(1, 3), publish_z, pose(2, 3), smooth_sensor_h_, sdk_z_rel);
+
+      // 키프레임 등록 (EMA z 보정값 반영)
+      Eigen::Matrix4f kf_pose = pose;
+      kf_pose(2, 3) = publish_z;
+      if (kf_manager_.tryAdd(cloud_stamp, kf_pose, gr.no_ground, get_logger())) {
+        auto lg = get_logger();
+        const auto candidates = kf_manager_.findLoopCandidates(150, 0.55f, &lg);
+        loop_candidate_count_ += candidates.size();
+
+        std::optional<KeyFrameManager::LoopEdge> best_edge;
+        for (const auto & c : candidates) {
+          auto edge = kf_manager_.verifyLoop(
+            static_cast<int>(kf_manager_.size() - 1), c.keyframe_id, get_logger());
+          if (edge && (!best_edge || edge->fitness_score < best_edge->fitness_score)) {
+            best_edge = edge;
+          }
+        }
+        if (best_edge) {
+          kf_manager_.commitLoop(*best_edge, get_logger());
+        }
+      }
     }
 
     sdk_prev_pose_ = sdk_current;
@@ -239,6 +268,7 @@ private:
   SdkPoseBuffer                 sdk_buffer_;
   ImuBuffer                     imu_buffer_;
   IcpOdometry                   icp_odom_;
+  KeyFrameManager               kf_manager_;
   tf2_ros::TransformBroadcaster tf_broadcaster_;
 
   Path            path_msg_;
@@ -251,6 +281,7 @@ private:
   float           init_z_         = 0.0f;
   float           init_sensor_h_  = 0.0f;
   float           smooth_sensor_h_= 0.0f;
+  size_t          loop_candidate_count_ = 0;
 };
 
 int main(int argc, char * argv[])
